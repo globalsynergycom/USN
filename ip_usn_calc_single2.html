@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ИП УСН 6% · Lite</title>
+<style>
+:root{ --bg:#0b0c10; --card:#14151a; --text:#e6e6e6; --muted:#9aa0a6; --accent:#4da3ff; --danger:#ff5a5a; }
+*{ box-sizing:border-box; font-family:-apple-system,system-ui,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial; }
+body{ margin:0; background:var(--bg); color:var(--text); padding:12px 12px 48px; }
+h1{ font-size:20px; margin:6px 0; } h2{ font-size:16px; margin:0 0 8px; }
+.card{ background:var(--card); border:1px solid #20222a; border-radius:12px; padding:12px; margin:10px 0; }
+label{ display:flex; gap:8px; align-items:center; font-size:14px; }
+input,select,button{ width:100%; padding:10px; border-radius:10px; border:1px solid #272a33; background:#101218; color:var(--text); font-size:14px; }
+button{ background:#182033; border-color:#243049; }
+.table{ width:100%; border-collapse:collapse; font-size:14px; }
+.table th,.table td{ border-bottom:1px solid #222531; padding:8px 6px; text-align:left; }
+.row{ display:flex; justify-content:space-between; gap:10px; }
+.badge{ padding:2px 8px; border-radius:999px; font-size:12px; }
+.badge-green{ background:#163320; color:#a2ffcc; } .badge-red{ background:#3a1216; color:#ffb0b0; }
+small{ color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>ИП УСН 6% · Lite</h1>
+<div class="card">
+  <h2>Настройки</h2>
+  <label>Год <input id="year" type="number" value="2025" min="2020" max="2032"></label>
+  <label>Месяц регистрации <input id="regMonth" type="number" value="7" min="1" max="12"></label>
+  <label><input id="prorata" type="checkbox" checked> Пропорционировать взносы в первый год</label>
+  <div class="row">
+    <label style="flex:1">УСН, % <input id="usnRate" type="number" value="6" step="0.1"></label>
+    <label style="flex:1">ПФР год, ₽ <input id="pfrYear" type="number" value="45842"></label>
+  </div>
+  <div class="row">
+    <label style="flex:1">ФОМС год, ₽ <input id="fomsYear" type="number" value="10180"></label>
+    <label style="flex:1">Порог 1%, ₽ <input id="threshold" type="number" value="300000"></label>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Доходы</h2>
+  <table class="table" id="incomeTable">
+    <thead><tr><th>Дата</th><th>Сумма, ₽</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <button id="addIncome" type="button" onclick="addIncome()">+ Доход</button>
+  <small>Пример: 2025-07-10 / 200000</small>
+</div>
+
+<div class="card">
+  <h2>Платежи (факт)</h2>
+  <table class="table" id="payTable">
+    <thead><tr><th>Дата</th><th>Тип</th><th>Сумма, ₽</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <button id="addPay" type="button" onclick="addPay()">+ Платёж</button>
+  <small>Типы: УСН, Взносы ПФР, Взносы ФОМС, Доп. 1%</small>
+</div>
+
+<div class="card">
+  <h2>Итоги</h2>
+  <div id="totals"></div>
+</div>
+
+<div class="card">
+  <h2>График платежей</h2>
+  <div id="schedule"></div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <button type="button" onclick="save()">Сохранить</button>
+    <button type="button" onclick="resetAll()" style="background:#3a1216;border-color:#4d1b21;">Сброс</button>
+  </div>
+  <small>Совет: Поделиться → На экран Домой (работает офлайн)</small>
+</div>
+
+<script>
+const fmt = n => (Math.round(+n||0)).toLocaleString('ru-RU');
+const $ = sel => document.querySelector(sel);
+let state = {
+  year:2025, regMonth:7, prorata:true,
+  usnRate:0.06, pfrYear:45842, fomsYear:10180, threshold:300000,
+  incomes:[{date:'2025-07-10', amount:200000}],
+  payments:[]
+};
+function load(){
+  try{ const s=localStorage.getItem('ip_usn_lite'); if(s) state=JSON.parse(s); }catch(e){}
+}
+function save(){ localStorage.setItem('ip_usn_lite', JSON.stringify(state)); alert('Сохранено'); }
+function resetAll(){ if(confirm('Сбросить данные?')){ localStorage.removeItem('ip_usn_lite'); location.reload(); } }
+
+function bindInputs(){
+  $('#year').value = state.year;
+  $('#regMonth').value = state.regMonth;
+  $('#prorata').checked = state.prorata;
+  $('#usnRate').value = state.usnRate*100;
+  $('#pfrYear').value = state.pfrYear;
+  $('#fomsYear').value = state.fomsYear;
+  $('#threshold').value = state.threshold;
+  ['year','regMonth','usnRate','pfrYear','fomsYear','threshold','prorata'].forEach(id=>{
+    document.getElementById(id).oninput = recalc;
+  });
+}
+function addIncome(){
+  state.incomes.push({date: new Date().toISOString().slice(0,10), amount:0});
+  renderIncome(); recalc();
+}
+function delIncome(i){ state.incomes.splice(i,1); renderIncome(); recalc(); }
+function renderIncome(){
+  const tb = $('#incomeTable tbody'); tb.innerHTML='';
+  state.incomes.forEach((row,i)=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="date" value="${row.date}" onchange="state.incomes[${i}].date=this.value; recalc()"></td>
+      <td><input type="number" value="${row.amount}" onchange="state.incomes[${i}].amount=+this.value; recalc()"></td>
+      <td><button type="button" onclick="delIncome(${i})">×</button></td>`;
+    tb.appendChild(tr);
+  });
+}
+function addPay(){
+  state.payments.push({date: new Date().toISOString().slice(0,10), type:'pfr', amount:0});
+  renderPay(); recalc();
+}
+function delPay(i){ state.payments.splice(i,1); renderPay(); recalc(); }
+function renderPay(){
+  const opts = `<option value="usn">УСН</option><option value="pfr">Взносы ПФР</option><option value="foms">Взносы ФОМС</option><option value="extra1">Доп. 1%</option>`;
+  const tb = $('#payTable tbody'); tb.innerHTML='';
+  state.payments.forEach((row,i)=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="date" value="${row.date}" onchange="state.payments[${i}].date=this.value; recalc()"></td>
+      <td><select onchange="state.payments[${i}].type=this.value; recalc()">${opts}</select></td>
+      <td><input type="number" value="${row.amount}" onchange="state.payments[${i}].amount=+this.value; recalc()"></td>
+      <td><button type="button" onclick="delPay(${i})">×</button></td>`;
+    tb.appendChild(tr);
+    tr.querySelector('select').value = row.type;
+  });
+}
+
+function qOf(d){ const m = new Date(d).getMonth()+1; return Math.floor((m-1)/3)+1; }
+function endOfQuarter(y,q){ const m=q*3; const day={3:31,6:30,9:30,12:31}[m]; return new Date(y,m-1,day); }
+function nextMonth25(d){ return new Date(d.getFullYear(), d.getMonth()+1, 25); }
+function sumPaid(type, due){
+  return state.payments.filter(p=>p.type===type && new Date(p.date)<=due)
+    .reduce((a,b)=>a+(+b.amount||0),0);
+}
+
+function recalc(){
+  state.year = +$('#year').value;
+  state.regMonth = +$('#regMonth').value;
+  state.prorata = $('#prorata').checked;
+  state.usnRate = (+$('#usnRate').value)/100;
+  state.pfrYear = +$('#pfrYear').value;
+  state.fomsYear = +$('#fomsYear').value;
+  state.threshold = +$('#threshold').value;
+
+  const y=state.year;
+  const incomes = state.incomes.filter(i=>new Date(i.date).getFullYear()===y);
+  const qIncome = {1:0,2:0,3:0,4:0};
+  incomes.forEach(i=>{ qIncome[qOf(i.date)] += (+i.amount||0); });
+  const totalIncome = Object.values(qIncome).reduce((a,b)=>a+b,0);
+
+  let pfr = state.pfrYear, foms = state.fomsYear;
+  if(state.prorata){
+    const months = Math.max(0, 13 - state.regMonth);
+    const c = months/12; pfr = Math.round(pfr*c); foms = Math.round(foms*c);
+  }
+
+  const extraBase = Math.max(0, totalIncome - state.threshold);
+  const extra1 = Math.round(extraBase * 0.01);
+
+  const results = [];
+  for(let q=1;q<=4;q++){
+    const base = qIncome[q] * state.usnRate;
+    const due = nextMonth25(endOfQuarter(y,q));
+    const red = Math.min(base, sumPaid('pfr', due) + sumPaid('foms', due));
+    const toPay = Math.max(0, base - red);
+    const paidUSN = sumPaid('usn', due);
+    results.push({title:`Аванс УСН Q${q} ${y}`, due, base, red, toPay, paid:paidUSN, out: Math.max(0, toPay - paidUSN)});
+  }
+  const finalDue = new Date(y+1,3,30);
+  const usnYearBase = totalIncome * state.usnRate;
+  const redYear = Math.min(usnYearBase, sumPaid('pfr', finalDue)+sumPaid('foms', finalDue));
+  const usnYearToPay = Math.max(0, usnYearBase - redYear);
+  const usnYearOut = Math.max(0, usnYearToPay - sumPaid('usn', finalDue));
+  results.push({title:`Итог УСН за ${y} (декларация)`, due:finalDue, base:usnYearBase, red:redYear, toPay:usnYearToPay, paid:sumPaid('usn', finalDue), out:usnYearOut});
+  const extraDue = new Date(y+1,6,1);
+  const extraPaid = sumPaid('extra1', extraDue);
+  results.push({title:`Доп. взнос 1% (с превышения)`, due:extraDue, base:extra1, red:0, toPay:extra1, paid:extraPaid, out: Math.max(0, extra1-extraPaid)});
+
+  // Totals
+  $('#totals').innerHTML = `
+    <div class="row"><span>Доход за год</span><strong>₽ ${fmt(totalIncome)}</strong></div>
+    <div class="row"><span>УСН (6%) база</span><strong>₽ ${fmt(usnYearBase)}</strong></div>
+    <div class="row"><span>Фикс. взносы (расчётные)</span><strong>₽ ${fmt(pfr+foms)}</strong></div>
+    <div class="row"><span>Доп. 1% (расчётный)</span><strong>₽ ${fmt(extra1)}</strong></div>`;
+
+  // Schedule
+  $('#schedule').innerHTML = results.map(r=>`
+    <div style="padding:8px 0; border-bottom:1px dashed #2a2d3a">
+      <div class="row"><strong>${r.title}</strong><span>${r.due.toLocaleDateString('ru-RU')}</span></div>
+      <div class="row"><span>Начислено</span><span>₽ ${fmt(r.base)}</span></div>
+      <div class="row"><span>Уменьшение взносами</span><span>₽ ${fmt(r.red)}</span></div>
+      <div class="row"><span>К уплате</span><span>₽ ${fmt(r.toPay)}</span></div>
+      <div class="row"><span>Оплачено</span><span>₽ ${fmt(r.paid)}</span></div>
+      <div class="row"><span>Задолженность</span><span class="${r.out>0?'badge badge-red':'badge badge-green'}">₽ ${fmt(r.out)}</span></div>
+    </div>`).join('');
+}
+
+load();
+bindInputs();
+renderIncome();
+renderPay();
+recalc();
+</script>
+</body>
+</html>
